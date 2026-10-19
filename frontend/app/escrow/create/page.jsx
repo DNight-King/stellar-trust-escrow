@@ -35,6 +35,8 @@ import {
   getPaymentTokenStatus,
   isValidStellarAddress,
 } from '../../../lib/stellar';
+import TokenStatusNotice from './TokenStatusNotice';
+import { usePaymentTokenAvailability } from './usePaymentTokenAvailability';
 
 const STEPS = [
   { id: 1, label: 'Counterparty' },
@@ -90,7 +92,6 @@ export default function CreateEscrowPage() {
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState(null);
-  const [tokenStatus, setTokenStatus] = useState('unavailable');
   const [templateNotice, setTemplateNotice] = useState('');
   const [appliedQueryTemplateId, setAppliedQueryTemplateId] = useState(null);
 
@@ -99,36 +100,22 @@ export default function CreateEscrowPage() {
 
   const { showToast } = useToast();
 
+  const tokenAvailability = usePaymentTokenAvailability({
+    address,
+    isConnected,
+    tokenSymbol: formData.tokenAddress,
+    fetchStatus: getPaymentTokenStatus,
+  });
+  const { status: tokenStatus, pending: tokenStatusPending, stale: tokenStatusStale } =
+    tokenAvailability;
+
   const tokenStatusBlocksSubmission =
     tokenStatus === 'unsupported' ||
     tokenStatus === 'paused' ||
     tokenStatus === 'checking' ||
+    tokenStatusPending ||
+    tokenStatusStale ||
     (isConnected && tokenStatus === 'unavailable');
-
-  useEffect(() => {
-    if (formData.tokenAddress === 'custom') {
-      setTokenStatus('unsupported');
-      return;
-    }
-    if (!isConnected || !address) {
-      setTokenStatus('unavailable');
-      return;
-    }
-
-    let active = true;
-    setTokenStatus('checking');
-    getPaymentTokenStatus({ sourceAddress: address, tokenSymbol: formData.tokenAddress })
-      .then((status) => {
-        if (active) setTokenStatus(status);
-      })
-      .catch(() => {
-        if (active) setTokenStatus('unavailable');
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [address, formData.tokenAddress, isConnected]);
 
   useEffect(() => {
     const templateId = searchParams.get('template');
@@ -271,7 +258,7 @@ export default function CreateEscrowPage() {
         {currentStep === 1 && (
           <StepCounterparty
             formData={formData}
-            tokenStatus={tokenStatus}
+            tokenAvailability={tokenAvailability}
             setFormData={setFormData}
             setTouched={setTouched}
             amountError={amountError}
@@ -287,7 +274,7 @@ export default function CreateEscrowPage() {
           />
         )}
         {currentStep === 3 && <StepReview formData={formData} />}
-        {currentStep === 4 && <StepSign tokenStatus={tokenStatus} error={error} />}
+        {currentStep === 4 && <StepSign tokenAvailability={tokenAvailability} error={error} />}
       </div>
 
       {/* Navigation */}
@@ -323,7 +310,7 @@ export default function CreateEscrowPage() {
 /**
  * Step 1: Enter counterparty details.
  */
-function StepCounterparty({ formData, tokenStatus, setFormData, setTouched, amountError, descriptionError }) {
+function StepCounterparty({ formData, tokenAvailability, setFormData, setTouched, amountError, descriptionError }) {
   return (
     <div className="space-y-4">
       <h2 className="text-lg font-semibold text-white">Counterparty & Funds</h2>
@@ -355,7 +342,7 @@ function StepCounterparty({ formData, tokenStatus, setFormData, setTouched, amou
             <option value="custom">Custom…</option>
           </select>
         </div>
-        <TokenStatusNotice status={tokenStatus} />
+        <TokenStatusNotice {...tokenAvailability} />
         <div>
           <label htmlFor="total-amount" className="block text-sm text-gray-400 mb-1">
             Total Amount
@@ -518,7 +505,7 @@ function StepReview({ formData }) {
  * Step 4: Sign with Freighter.
  * TODO (contributor — Issue #33): build and sign the Soroban transaction
  */
-function StepSign({ error, tokenStatus }) {
+function StepSign({ error, tokenAvailability }) {
   return (
     <div className="space-y-4 text-center">
       <h2 className="text-lg font-semibold text-white">Sign & Submit</h2>
@@ -531,31 +518,10 @@ function StepSign({ error, tokenStatus }) {
           {error}
         </div>
       )}
-      <TokenStatusNotice status={tokenStatus} />
+      <TokenStatusNotice {...tokenAvailability} />
       <p className="text-xs text-amber-400">
         🚧 Freighter integration is not yet implemented — see Issue #33
       </p>
     </div>
-  );
-}
-
-function TokenStatusNotice({ status }) {
-  const messages = {
-    checking: 'Checking payment token status…',
-    whitelisted: 'Payment token is whitelisted.',
-    supported: 'Payment token is supported.',
-    unsupported: 'Unsupported payment token. Choose XLM or USDC.',
-    paused: 'Escrow creation is unavailable while the contract is paused.',
-    unavailable: 'Token status is unavailable until the wallet and contract are configured.',
-  };
-  const blocked = status === 'unsupported' || status === 'paused';
-
-  return (
-    <p
-      role={blocked ? 'alert' : 'status'}
-      className={`text-sm ${blocked ? 'text-red-400' : 'text-gray-400'}`}
-    >
-      {messages[status] || messages.unavailable}
-    </p>
   );
 }
