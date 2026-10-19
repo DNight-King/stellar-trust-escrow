@@ -43,6 +43,39 @@
 
 import { createHash } from 'crypto';
 import cache from '../../lib/cache.js';
+import * as metrics from '../../lib/metrics.js';
+import { createModuleLogger } from '../../config/logger.js';
+
+const log = createModuleLogger('middleware.cache');
+
+// ── Telemetry ─────────────────────────────────────────────────────────────────
+
+const OUTCOMES = new Set(['hit', 'miss', 'bypass', 'store', 'error', 'store_error']);
+
+/**
+ * Records a cache outcome with bounded labels only: `outcome` (fixed set) and
+ * `scope` (`tenant` | `global`). Tenant ids/slugs, cache keys, paths, and
+ * payloads are never emitted; logs are correlated via the logger's request
+ * context (requestId / correlationId). Telemetry failures never affect the
+ * request.
+ *
+ * @param {string} outcome
+ * @param {import('express').Request} req
+ * @param {Error} [err]
+ */
+export function recordCacheOutcome(outcome, req, err) {
+  try {
+    const labels = {
+      outcome: OUTCOMES.has(outcome) ? outcome : 'error',
+      scope: req?.tenant ? 'tenant' : 'global',
+    };
+    metrics.httpCacheRequestsTotal?.inc(labels);
+    if (err) log.warn({ message: 'cache.outcome', ...labels, errorName: err.name || 'Error' });
+    else log.debug({ message: 'cache.outcome', ...labels });
+  } catch {
+    // Telemetry is best-effort.
+  }
+}
 
 // ── TTL presets (overridable via env) ─────────────────────────────────────────
 
@@ -123,18 +156,29 @@ export function cacheResponse(options = {}) {
     if (req.method !== 'GET' && req.method !== 'HEAD') return next();
 
     // Allow per-request bypass (e.g. authenticated writes, admin routes)
-    if (skip && skip(req, res)) return next();
+    if (skip && skip(req, res)) {
+      recordCacheOutcome('bypass', req);
+      return next();
+    }
 
     const key = keyFn(req);
 
     // ── Cache hit ─────────────────────────────────────────────────────────────
-    const cached = await cache.get(key);
+    let cached;
+    try {
+      cached = await cache.get(key);
+    } catch (err) {
+      recordCacheOutcome('error', req, err);
+      throw err;
+    }
     if (cached !== null) {
+      recordCacheOutcome('hit', req);
       res.setHeader('X-Cache', 'HIT');
       res.setHeader('X-Cache-Key', key);
       return res.json(cached);
     }
 
+    recordCacheOutcome('miss', req);
     res.setHeader('X-Cache', 'MISS');
     res.setHeader('X-Cache-Key', key);
 
@@ -146,7 +190,13 @@ export function cacheResponse(options = {}) {
         const resolvedTags = (typeof tags === 'function' ? tags(req) : tags).map((t) =>
           tenantTag(t, req),
         );
-        await cache.setWithTags(key, body, ttl, resolvedTags);
+        try {
+          await cache.setWithTags(key, body, ttl, resolvedTags);
+          recordCacheOutcome('store', req);
+        } catch (err) {
+          recordCacheOutcome('store_error', req, err);
+          throw err;
+        }
       }
       return originalJson(body);
     };

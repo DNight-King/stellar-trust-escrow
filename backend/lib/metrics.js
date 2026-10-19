@@ -128,6 +128,13 @@ export const cacheMissesTotal = new client.Counter({
   registers: [register],
 });
 
+export const httpCacheRequestsTotal = new client.Counter({
+  name: 'http_cache_requests_total',
+  help: 'HTTP response cache outcomes by tenant scope (tenant|global)',
+  labelNames: ['outcome', 'scope'],
+  registers: [register],
+});
+
 export const cacheSize = new client.Gauge({
   name: 'cache_size',
   help: 'Current number of entries in the in-memory cache',
