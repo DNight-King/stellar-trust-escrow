@@ -13,6 +13,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
+import { emitPaymentTokenTelemetry } from './paymentTokenTelemetry';
 
 export function usePaymentTokenAvailability({ address, isConnected, tokenSymbol, fetchStatus }) {
   const [state, setState] = useState({ status: 'unavailable', pending: false, stale: false });
@@ -44,11 +45,18 @@ export function usePaymentTokenAvailability({ address, isConnected, tokenSymbol,
         if (requestId !== requestRef.current) return;
         confirmedRef.current[tokenSymbol] = status;
         setState({ status, pending: false, stale: false });
+        emitPaymentTokenTelemetry({ token: tokenSymbol, outcome: 'confirmed', status });
       })
       .catch(() => {
         if (requestId !== requestRef.current) return;
         const fallback = confirmedRef.current[tokenSymbol];
-        setState({ status: fallback ?? 'unavailable', pending: false, stale: Boolean(fallback) });
+        const status = fallback ?? 'unavailable';
+        setState({ status, pending: false, stale: Boolean(fallback) });
+        emitPaymentTokenTelemetry({
+          token: tokenSymbol,
+          outcome: fallback ? 'rolled_back' : 'failed',
+          status,
+        });
       });
   }, [address, isConnected, tokenSymbol, fetchStatus]);
 
